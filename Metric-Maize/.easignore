@@ -1,0 +1,30 @@
+# Dataset folders (DO NOT UPLOAD)
+FYP/
+FYP DATASET/
+agalwoiwhite/
+*.jpg
+*.png
+*.jpeg
+!assets/
+!assets/**
+
+# Other large files
+node_modules/
+.expo/
+.git/
+*.log
+*.tmp
+.DS_StoreFYP/ 
+FYP DATASET/ 
+agalwoiwhite/ 
+*.jpg 
+*.jpeg 
+*.png 
+!assets/icon.png 
+!assets/splash-icon.png 
+!assets/adaptive-icon.png 
+node_modules/ 
+.expo/ 
+.expo/ 
+node_modules/ 
+!assets/adaptive-icon.png 
