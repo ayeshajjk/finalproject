@@ -1,3 +1,7 @@
+# ============================================================
+# MAIZE CLASSIFICATION API - FIXED FOR KERAS VERSION ISSUES
+# ============================================================
+
 import sys
 import io
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
@@ -6,23 +10,16 @@ sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='repla
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import os
-os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
+import json
+import traceback
+import requests  # ✅ ADDED for downloading images from URL
+
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
-# Limit GPU memory
 import tensorflow as tf
-gpus = tf.config.list_physical_devices('GPU')
-if gpus:
-    try:
-        for gpu in gpus:
-            tf.config.experimental.set_memory_growth(gpu, True)
-    except RuntimeError as e:
-        print(e)
-
 import numpy as np
 from PIL import Image
-import json
-import io
+import io as iolib
 
 app = Flask(__name__)
 CORS(app)
@@ -30,326 +27,294 @@ CORS(app)
 # ============================================================
 # PATHS
 # ============================================================
-MODEL_PATH  = 'models/corn_model.keras/corn_model_final.h5'
-CONFIG_PATH = 'models/config.json'
-LABELS_PATH = 'models/class_labels.json'
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+MODEL_FOLDER = os.path.join(BASE_DIR, 'models', 'corn_model.keras')
+MODEL_PATH = os.path.join(MODEL_FOLDER, 'corn_model_final.h5')
+
+IMG_SIZE = 224
+NUM_CLASSES = 12
+model = None
+MODEL_LOADED = False
+LOAD_ERROR = None
+
+CLASS_LABELS = [
+    'Agalwoi_white_Good', 'Agalwoi_white_damged', 'Agalwoi_white_impure',
+    'Hybrid_local_white_damaged', 'Hybrid_local_white_good', 'Hybrid_local_white_impure',
+    'Popcorn_damaged', 'Popcorn_good', 'Popcorn_impure',
+    'Redcorn_damaged', 'Redcorn_good', 'Redcorn_impure'
+]
+
+VARIETY_CLEAN_NAMES = {
+    'Agalwoi_white': 'Agalwoi White',
+    'Hybrid_local_white': 'Hybrid Local White',
+    'Popcorn': 'Popcorn',
+    'Redcorn': 'Redcorn'
+}
 
 # ============================================================
-# REBUILD MODEL ARCHITECTURE (Keras 3 -> TF 2.15 compat)
+# BUILD MODEL ARCHITECTURE (EXACT MATCH TO YOUR TRAINING)
 # ============================================================
-def build_model_architecture(num_classes=4, img_size=224):
-    """
-    Rebuild the exact CornMobileNetV2 architecture using TF 2.15 API.
-    Architecture: MobileNetV2 (frozen) -> GAP -> BN -> Dense(256) -> 
-                  Dropout(0.5) -> BN -> Dense(num_classes, softmax)
-    """
-    base_model = tf.keras.applications.MobileNetV2(
-        input_shape=(img_size, img_size, 3),
+def build_model_architecture():
+    print("   Building model architecture...")
+    base = tf.keras.applications.MobileNetV2(
+        input_shape=(IMG_SIZE, IMG_SIZE, 3),
         include_top=False,
-        weights=None  # We'll load weights from h5
+        weights=None
     )
-    base_model.trainable = False
-
-    inputs = tf.keras.Input(shape=(img_size, img_size, 3))
-    x = base_model(inputs, training=False)
+    base.trainable = False
+    
+    inputs = tf.keras.Input(shape=(IMG_SIZE, IMG_SIZE, 3))
+    x = base(inputs, training=False)
     x = tf.keras.layers.GlobalAveragePooling2D()(x)
-    x = tf.keras.layers.BatchNormalization(momentum=0.99)(x)
-    x = tf.keras.layers.Dense(256, activation='relu')(x)
-    x = tf.keras.layers.Dropout(0.5)(x)
-    x = tf.keras.layers.BatchNormalization(momentum=0.99)(x)
-    outputs = tf.keras.layers.Dense(num_classes, activation='softmax')(x)
+    x = tf.keras.layers.BatchNormalization()(x)
+    x = tf.keras.layers.Dense(512, activation='relu',
+                              kernel_regularizer=tf.keras.regularizers.l2(1e-4))(x)
+    x = tf.keras.layers.BatchNormalization()(x)
+    x = tf.keras.layers.Dropout(0.45)(x)
+    x = tf.keras.layers.Dense(256, activation='relu',
+                              kernel_regularizer=tf.keras.regularizers.l2(1e-4))(x)
+    x = tf.keras.layers.Dropout(0.315)(x)
+    outputs = tf.keras.layers.Dense(NUM_CLASSES, activation='softmax')(x)
+    return tf.keras.Model(inputs, outputs)
 
-    model = tf.keras.Model(inputs, outputs, name='CornMobileNetV2')
-    return model
 
-
+# ============================================================
+# LOAD MODEL WITH KERAS VERSION FIX
+# ============================================================
 def load_model_safe():
-    """Load model by rebuilding architecture and loading weights from h5"""
-    import h5py
+    global model, MODEL_LOADED, LOAD_ERROR
+    print("\n" + "="*70)
+    print("🔄 LOADING MODEL")
+    print("="*70)
+    print(f"TensorFlow: {tf.__version__}")
+    print(f"Model path: {MODEL_PATH}")
+    print(f"File exists: {os.path.exists(MODEL_PATH)}")
 
-    print("Loading model...")
+    if not os.path.exists(MODEL_PATH):
+        LOAD_ERROR = "Model file not found"
+        print(f"❌ {LOAD_ERROR}")
+        return False
 
-    # Method 1: Rebuild architecture + load weights by name
+    # -------- METHOD 1: Load with safe_mode (TF 2.16+) --------
     try:
-        print("   Trying: Rebuild architecture + load weights by name...")
-        rebuilt = build_model_architecture(num_classes=4, img_size=224)
+        print("\n[Method 1] Loading with safe_mode=False...")
+        model = tf.keras.models.load_model(MODEL_PATH, compile=False, safe_mode=False)
+        model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
+        MODEL_LOADED = True
+        print("✅ Method 1 SUCCESS!")
+        return True
+    except TypeError:
+        # safe_mode doesn't exist in older TF versions
+        pass
+    except Exception as e:
+        print(f"❌ Method 1 failed: {str(e)[:150]}")
 
+    # -------- METHOD 2: Rebuild architecture + load weights --------
+    try:
+        print("\n[Method 2] Rebuilding model + loading weights...")
+        rebuilt = build_model_architecture()
+        rebuilt.load_weights(MODEL_PATH, skip_mismatch=True, by_name=False)
+        rebuilt.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
+        model = rebuilt
+        MODEL_LOADED = True
+        print("✅ Method 2 SUCCESS!")
+        return True
+    except Exception as e:
+        print(f"❌ Method 2 failed: {str(e)[:150]}")
+
+    # -------- METHOD 3: Manual H5 weight loading --------
+    try:
+        import h5py
+        print("\n[Method 3] Manual H5 weight loading...")
+        
+        rebuilt = build_model_architecture()
+        
         with h5py.File(MODEL_PATH, 'r') as f:
-            # Check h5 structure
             if 'model_weights' in f:
-                weight_group = f['model_weights']
+                weight_names = list(f['model_weights'].keys())
             else:
-                weight_group = f
-
+                weight_names = list(f.keys())
+            
+            print(f"   Found {len(weight_names)} weight groups in H5 file")
+            
+            # Load weights layer by layer
             for layer in rebuilt.layers:
-                name = layer.name
-                if name in weight_group:
-                    grp = weight_group[name]
-                    weight_names = []
-                    if name in grp:
-                        sub = grp[name]
-                        weight_names = [sub[wn][()] for wn in sub]
-                    elif len(grp.keys()) > 0:
-                        # Try flat structure
-                        first_key = list(grp.keys())[0]
-                        sub = grp[first_key] if isinstance(grp[first_key], h5py.Group) else grp
-                        weight_names = [sub[wn][()] for wn in sub] if isinstance(sub, h5py.Group) else [grp[first_key][()]]
-                    
-                    if weight_names:
-                        try:
-                            layer.set_weights(weight_names)
-                        except Exception as we:
-                            pass  # Skip layers with shape mismatches
+                if layer.name in weight_names:
+                    try:
+                        weights = []
+                        if 'model_weights' in f:
+                            layer_group = f['model_weights'][layer.name]
+                        else:
+                            layer_group = f[layer.name]
+                        
+                        if hasattr(layer_group, 'keys'):
+                            for w_name in layer_group.keys():
+                                weights.append(layer_group[w_name][()])
+                        
+                        if weights and len(weights) == len(layer.get_weights()):
+                            layer.set_weights(weights)
+                    except Exception as e:
+                        pass
+        
+        rebuilt.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
+        model = rebuilt
+        MODEL_LOADED = True
+        print("✅ Method 3 SUCCESS!")
+        return True
+    except Exception as e:
+        print(f"❌ Method 3 failed: {str(e)[:150]}")
+        traceback.print_exc()
 
-        rebuilt.compile(
-            optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
-            loss='categorical_crossentropy',
-            metrics=['accuracy']
-        )
-        print("Model loaded successfully (rebuild + h5 weights)")
-        return rebuilt, True
+    LOAD_ERROR = "All loading methods failed. Check TensorFlow version compatibility."
+    print(f"\n❌ {LOAD_ERROR}")
+    return False
 
-    except Exception as e1:
-        print(f"   Method 1 failed: {e1}")
-
-    # Method 2: Rebuild + load_weights with skip_mismatch
-    try:
-        print("   Trying: Rebuild + load_weights(by_name, skip_mismatch)...")
-        rebuilt = build_model_architecture(num_classes=4, img_size=224)
-        rebuilt.load_weights(MODEL_PATH, by_name=True, skip_mismatch=True)
-        rebuilt.compile(
-            optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
-            loss='categorical_crossentropy',
-            metrics=['accuracy']
-        )
-        print("Model loaded successfully (rebuild + load_weights)")
-        return rebuilt, True
-
-    except Exception as e2:
-        print(f"   Method 2 failed: {e2}")
-
-    # Method 3: Direct load (for older format h5 files)
-    try:
-        print("   Trying: Direct load_model...")
-        loaded_model = tf.keras.models.load_model(MODEL_PATH, compile=False)
-        loaded_model.compile(
-            optimizer='adam',
-            loss='categorical_crossentropy',
-            metrics=['accuracy']
-        )
-        print("Model loaded successfully (direct load)")
-        return loaded_model, True
-
-    except Exception as e3:
-        print(f"   Method 3 failed: {e3}")
-
-    print("All loading methods failed!")
-    return None, False
-
-
-print("\n" + "=" * 60)
-print("🌽 MAIZE CLASSIFICATION & GRADING API")
-print("=" * 60)
-
-# Load model
-model, MODEL_LOADED = load_model_safe()
-
-if MODEL_LOADED and model is not None:
-    try:
-        print(f"   Input  shape: {model.input_shape}")
-        print(f"   Output shape: {model.output_shape}")
-    except:
-        print("   ⚠️  Could not print model shapes")
 
 # ============================================================
-# LOAD CLASS LABELS
-# ============================================================
-print("🔄 Loading class labels...")
-try:
-    with open(LABELS_PATH, 'r') as f:
-        CLASS_LABELS = json.load(f)
-    print(f"✅ Classes: {CLASS_LABELS}")
-except Exception as e:
-    print(f"❌ Error loading labels: {e}")
-    CLASS_LABELS = ['Agalwoi White', 'Hybrid Local White', 'Popcorn', 'Redcorn']
-    print(f"   Using default classes: {CLASS_LABELS}")
-
-# ============================================================
-# LOAD CONFIG
-# ============================================================
-print("🔄 Loading configuration...")
-try:
-    with open(CONFIG_PATH, 'r') as f:
-        project_config = json.load(f)
-        IMG_SIZE = project_config.get('img_size', 224)
-    print(f"✅ Image size: {IMG_SIZE}x{IMG_SIZE}")
-except Exception as e:
-    print(f"⚠️  Using default IMG_SIZE=224: {e}")
-    IMG_SIZE = 224
-
-# ============================================================
-# GRADING LOGIC
-# ============================================================
-def determine_quality_grade(image_array):
-    """
-    Determine quality grade based on image statistics.
-    Good:    High brightness, low variation
-    Impure:  Very dark or very high variation
-    Damaged: Everything in between
-    """
-    brightness = float(np.mean(image_array))
-    std_dev    = float(np.std(image_array))
-
-    print(f"   📊 Brightness: {brightness:.3f} | Std Dev: {std_dev:.3f}")
-
-    if brightness > 0.5 and std_dev < 0.25:
-        return "good"
-    elif brightness < 0.3 or std_dev > 0.35:
-        return "impure"
-    else:
-        return "damaged"
-
-# ============================================================
-# IMAGE PREPROCESSING
+# PREPROCESSING
 # ============================================================
 def preprocess_image(image):
-    """Preprocess image for model prediction"""
-    
     if image.mode != 'RGB':
         image = image.convert('RGB')
-    
-    image = image.resize((IMG_SIZE, IMG_SIZE))
-    img_array = np.array(image) / 255.0
-    img_array = np.expand_dims(img_array, axis=0)
-    
-    return img_array
+    image = image.resize((IMG_SIZE, IMG_SIZE), Image.Resampling.BILINEAR)
+    img_array = np.array(image, dtype=np.float32)
+    img_array = tf.keras.applications.mobilenet_v2.preprocess_input(img_array)
+    return np.expand_dims(img_array, axis=0)
+
+
+# ============================================================
+# PARSE PREDICTION
+# ============================================================
+def parse_prediction(full_class_name):
+    parts = full_class_name.split('_')
+    grade = parts[-1].lower().replace('damged', 'damaged')
+    variety_key = '_'.join(parts[:-1])
+    clean_name = VARIETY_CLEAN_NAMES.get(variety_key, variety_key.replace('_', ' '))
+    return clean_name, grade
+
 
 # ============================================================
 # ROUTES
 # ============================================================
-
-@app.route('/', methods=['GET'])
-def home():
+@app.route('/status', methods=['GET'])
+def status():
     return jsonify({
-        'status'   : 'Maize Classification API is running! 🌽',
-        'version'  : '1.0',
-        'model_status': 'loaded' if MODEL_LOADED else 'not loaded',
-        'endpoints': {
-            'info'    : '/info (GET)',
-            'classify': '/classify (POST with image)',
-            'health'  : '/health (GET)'
-        }
-    })
-
-
-@app.route('/health', methods=['GET'])
-def health():
-    """Health check endpoint"""
-    return jsonify({
-        'status': 'healthy',
+        'status': 'running',
         'model_loaded': MODEL_LOADED,
+        'load_error': LOAD_ERROR,
         'tensorflow_version': tf.__version__,
-        'gpu_available': len(tf.config.list_physical_devices('GPU')) > 0
+        'model_path': MODEL_PATH,
+        'model_file_exists': os.path.exists(MODEL_PATH),
+        'num_classes': NUM_CLASSES
     })
 
 
-@app.route('/info', methods=['GET'])
-def info():
-    return jsonify({
-        'status'        : 'ready' if MODEL_LOADED else 'model not loaded',
-        'model_loaded'  : MODEL_LOADED,
-        'varieties'     : CLASS_LABELS,
-        'num_varieties' : len(CLASS_LABELS),
-        'image_size'    : f'{IMG_SIZE}x{IMG_SIZE}',
-        'quality_grades': ['good', 'damaged', 'impure'],
-        'tensorflow_version': tf.__version__
-    })
-
-
+# ✅ UPDATED: Accept both file upload (web) and URL (Android)
 @app.route('/classify', methods=['POST'])
 def classify():
-    """Classify maize variety and determine quality grade"""
-    
-    # Check model
-    if not MODEL_LOADED or model is None:
+    if not MODEL_LOADED:
         return jsonify({
             'success': False,
-            'error'  : 'Model is not loaded. Please check server logs.'
+            'error': f'Model not loaded. Reason: {LOAD_ERROR}'
         }), 500
-    
-    # Check image
-    if 'image' not in request.files:
-        return jsonify({
-            'success': False,
-            'error'  : 'No image provided. Send image with key "image".'
-        }), 400
-    
+
+    image = None
+
+    # ✅ Option 1: Android sends image URL as JSON
+    if request.is_json:
+        data = request.get_json()
+        image_url = data.get('image_url')
+        if image_url:
+            print(f"📥 Downloading image from URL: {image_url}")
+            try:
+                response = requests.get(image_url, timeout=30)
+                response.raise_for_status()
+                image = Image.open(io.BytesIO(response.content))
+                print(f"✅ Image downloaded successfully ({len(response.content)} bytes)")
+            except Exception as e:
+                print(f"❌ Failed to download image: {str(e)}")
+                return jsonify({'success': False, 'error': f'Failed to download image: {str(e)}'}), 400
+
+    # ✅ Option 2: Web sends file upload
+    if not image and 'image' in request.files:
+        file = request.files['image']
+        if not file.filename:
+            return jsonify({'success': False, 'error': 'Empty filename'}), 400
+        try:
+            image = Image.open(io.BytesIO(file.read()))
+            print(f"✅ File upload received: {file.filename}")
+        except Exception as e:
+            print(f"❌ Failed to read file: {str(e)}")
+            return jsonify({'success': False, 'error': f'Failed to read file: {str(e)}'}), 400
+
+    if not image:
+        return jsonify({'success': False, 'error': 'No image provided (neither URL nor file)'}), 400
+
     try:
-        # Read and preprocess image
-        file            = request.files['image']
-        image_bytes     = file.read()
-        image           = Image.open(io.BytesIO(image_bytes))
-        
-        print(f"\n📸 Image: {file.filename} | Mode: {image.mode} | Size: {image.size}")
-        
-        processed_image = preprocess_image(image)
-        
-        # Predict variety
-        print("🔄 Predicting...")
-        predictions = model.predict(processed_image, verbose=0)
-        
-        predicted_index   = int(np.argmax(predictions[0]))
-        predicted_variety = CLASS_LABELS[predicted_index]
-        confidence        = float(predictions[0][predicted_index])
-        
-        # All predictions as percentages sorted by confidence
-        all_predictions = dict(
-            sorted(
-                {CLASS_LABELS[i]: round(float(predictions[0][i]) * 100, 2)
-                 for i in range(len(CLASS_LABELS))}.items(),
-                key=lambda x: x[1],
-                reverse=True
-            )
-        )
-        
-        # Grade
-        quality_grade = determine_quality_grade(processed_image[0])
-        
+        processed = preprocess_image(image)
+        predictions = model.predict(processed, verbose=0)[0]
+
+        idx = int(np.argmax(predictions))
+        confidence = float(predictions[idx])
+        full_name = CLASS_LABELS[idx]
+        variety, grade = parse_prediction(full_name)
+
         response = {
-            'success'          : True,
-            'predicted_class'  : predicted_variety,
-            'predicted_variety': predicted_variety,
-            'grade'            : quality_grade,
-            'confidence'       : round(confidence * 100, 2),
-            'all_predictions'  : all_predictions,
+            'success': True,
+            'classification': variety,
+            'variety': variety,
+            'grade': grade,
+            'confidence': round(confidence * 100, 2),
+            'full_prediction': full_name
         }
-        
-        print(f"✅ Variety   : {predicted_variety}")
-        print(f"✅ Grade     : {quality_grade}")
-        print(f"✅ Confidence: {confidence * 100:.2f}%")
-        
-        return jsonify(response)
-    
+
+        print(f"✅ {variety} | {grade} | {round(confidence*100, 2)}%")
+        return jsonify(response), 200
+
     except Exception as e:
-        print(f"❌ Error: {str(e)}")
-        import traceback
         traceback.print_exc()
-        return jsonify({
-            'success': False,
-            'error'  : str(e)
-        }), 500
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/debug-classify', methods=['POST'])
+def debug_classify():
+    if not MODEL_LOADED:
+        return jsonify({'success': False, 'error': 'Model not loaded'}), 500
+    
+    file = request.files.get('image')
+    if not file:
+        return jsonify({'success': False, 'error': 'No image'}), 400
+
+    try:
+        image = Image.open(iolib.BytesIO(file.read()))
+        processed = preprocess_image(image)
+        predictions = model.predict(processed, verbose=0)[0]
+
+        results = []
+        for i, prob in enumerate(predictions):
+            variety, grade = parse_prediction(CLASS_LABELS[i])
+            results.append({
+                "class": CLASS_LABELS[i],
+                "variety": variety,
+                "grade": grade,
+                "confidence": round(float(prob)*100, 2)
+            })
+
+        results.sort(key=lambda x: x["confidence"], reverse=True)
+        return jsonify({"success": True, "top_5": results[:5]})
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
 # ============================================================
-# START SERVER
+# MAIN
 # ============================================================
 if __name__ == '__main__':
-    print(f"\n🌾 Varieties : {', '.join(CLASS_LABELS)}")
-    print(f"🏆 Grades    : good, damaged, impure")
-    print(f"📏 Image Size: {IMG_SIZE}x{IMG_SIZE}")
-    print(f"🤖 Model     : {'✅ Loaded' if MODEL_LOADED else '❌ NOT LOADED'}")
-    print(f"🌐 Server    : http://localhost:5000")
-    print(f"🔧 TensorFlow: {tf.__version__}")
-    print("=" * 60 + "\n")
-    
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    print("="*70)
+    print("🌽 MAIZE CLASSIFICATION API - Keras Version Fix")
+    print("="*70)
+    load_model_safe()
+    print("\n📌 Visit: http://localhost:5000/status")
+    print("="*70 + "\n")
+    app.run(host='0.0.0.0', port=5000, debug=False)

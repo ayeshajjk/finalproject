@@ -7,7 +7,7 @@ import { Ionicons, MaterialCommunityIcons, Feather } from '@expo/vector-icons';
 import { useAuth } from '../contexts/AuthContext';
  
 import EditProfileScreen from '../screens/EditProfileScreen';
-import NotificationsScreen from '../screens/NotificationsScreen';
+// import NotificationsScreen from '../screens/NotificationsScreen';
 import PrivacyScreen from '../screens/PrivacyScreen';
 import TermsScreen from '../screens/TermsScreen';
 import HelpCenterScreen from '../screens/HelpCenterScreen';
@@ -230,14 +230,14 @@ const AppNavigator = () => {
             />
             
             {/* Notifications Screen */}
-            <Stack.Screen
+             {/* Stack.Screen
               name="Notifications"
               component={NotificationsScreen}
               options={{ 
                 headerShown: false,
                 presentation: 'card',
-              }}
-            />
+              }} */ }
+            
             
             {/* Privacy & Security Screen */}
             <Stack.Screen

@@ -1,1 +1,14 @@
-["Agalwoi White", "Hybrid Local White", "Popcorn", "Redcorn"]
+[
+  "Agalwoi_white_Good",
+  "Agalwoi_white_damged",
+  "Agalwoi_white_impure",
+  "Hybrid_local_white_damaged",
+  "Hybrid_local_white_good",
+  "Hybrid_local_white_impure",
+  "Popcorn_damaged",
+  "Popcorn_good",
+  "Popcorn_impure",
+  "Redcorn_damaged",
+  "Redcorn_good",
+  "Redcorn_impure"
+]

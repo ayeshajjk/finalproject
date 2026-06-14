@@ -12,6 +12,9 @@ export const AuthProvider = ({ children }) => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setUser(session?.user ?? null);
       setLoading(false);
+    }).catch((err) => {
+      console.error('Session error:', err);
+      setLoading(false);
     });
 
     // Listen for auth changes
@@ -22,6 +25,27 @@ export const AuthProvider = ({ children }) => {
 
     return () => subscription.unsubscribe();
   }, []);
+
+  // ✅ FIXED: Use maybeSingle() and don't throw errors
+  const refreshProfile = async () => {
+    if (!user) return null;
+    try {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', user.id)
+        .maybeSingle(); // ✅ Changed from .single() to .maybeSingle()
+
+      if (error) {
+        console.warn('Profile fetch warning:', error.message);
+        return null;
+      }
+      return data;
+    } catch (error) {
+      console.warn('Profile fetch error:', error.message);
+      return null;
+    }
+  };
 
   const signUp = async (email, password, username) => {
     try {
@@ -37,7 +61,6 @@ export const AuthProvider = ({ children }) => {
 
       if (error) throw error;
 
-      // Create profile
       if (data.user) {
         const { error: profileError } = await supabase
           .from('profiles')
@@ -54,6 +77,7 @@ export const AuthProvider = ({ children }) => {
 
       return { data, error: null };
     } catch (error) {
+      console.error('SignUp error:', error);
       return { data: null, error };
     }
   };
@@ -68,6 +92,7 @@ export const AuthProvider = ({ children }) => {
       if (error) throw error;
       return { data, error: null };
     } catch (error) {
+      console.error('SignIn error:', error);
       return { data: null, error };
     }
   };
@@ -79,6 +104,7 @@ export const AuthProvider = ({ children }) => {
       setUser(null);
       return { error: null };
     } catch (error) {
+      console.error('SignOut error:', error);
       return { error };
     }
   };
@@ -89,21 +115,11 @@ export const AuthProvider = ({ children }) => {
         throw new Error('No user logged in');
       }
 
-      console.log('Deleting account for user:', user.id);
-
-      // Call the database function to delete everything including auth user
       const { data, error } = await supabase.rpc('delete_user_account');
 
-      if (error) {
-        console.error('RPC Error:', error);
-        throw error;
-      }
+      if (error) throw error;
 
-      console.log('Account deleted successfully');
-
-      // Clear user state (user is already deleted from auth)
       setUser(null);
-
       return { error: null };
     } catch (error) {
       console.error('Delete account error:', error);
@@ -118,6 +134,7 @@ export const AuthProvider = ({ children }) => {
     signIn,
     signOut,
     deleteAccount,
+    refreshProfile,
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

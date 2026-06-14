@@ -258,23 +258,8 @@ const ProfileScreen = ({ navigation }) => {
           <Text style={styles.sectionTitle}>Preferences</Text>
           
           <View style={styles.menuCard}>
-            <TouchableOpacity
-              style={styles.menuItem}
-              onPress={() => navigation.navigate('Notifications')}
-              activeOpacity={0.7}
-            >
-              <View style={styles.menuLeft}>
-                <View style={[styles.menuIconContainer, { backgroundColor: '#DBEAFE' }]}>
-                  <Feather name="bell" size={22} color="#3B82F6" />
-                </View>
-                <View style={styles.menuTextContainer}>
-                  <Text style={styles.menuTitle}>Notifications</Text>
-                  <Text style={styles.menuSubtitle}>Alerts and reminders</Text>
-                </View>
-              </View>
-              <Feather name="chevron-right" size={20} color="#9CA3AF" />
-            </TouchableOpacity>
-
+      
+            
             <View style={styles.menuDivider} />
 
             <TouchableOpacity

@@ -1,83 +1,59 @@
-import axios from 'axios';
-import { Platform } from 'react-native';
+import { Platform } from "react-native";
 
-// ✅ DYNAMIC API URL BASED ON PLATFORM
+const ANDROID_IP = "192.168.1.12";
+const API_PORT = 5000;
+
 const getApiUrl = () => {
-  if (Platform.OS === 'web') {
-    return 'http://localhost:5000';      // Web browser
-  }
-  if (Platform.OS === 'android') {
-    // Use 10.0.2.2 for Android emulator, or LAN IP for physical device
-    return 'http://192.168.1.4:5000';    // Physical Android device
-    // return 'http://10.0.2.2:5000';    // Android Emulator
-  }
-  // iOS physical device or simulator
-  return 'http://192.168.1.4:5000';
+  if (Platform.OS === "web") return "http://localhost:5000";
+  return `http://${ANDROID_IP}:${API_PORT}`;
 };
 
 const API_URL = getApiUrl();
-
 console.log(`🌐 Using API URL: ${API_URL} (Platform: ${Platform.OS})`);
 
-/**
- * Get API information
- */
 export const getApiInfo = async () => {
   try {
-    const response = await axios.get(`${API_URL}/info`);
-    return response.data;
-  } catch (error) {
-    console.error('API info failed:', error);
-    throw error;
+    const res = await fetch(`${API_URL}/info`);
+    return await res.json();
+  } catch (e) {
+    console.warn("Ignoring /info error:", e?.message);
+    return null;
   }
 };
 
-/**
- * Classify maize image and get quality grade
- * @param {string} imageUri - Local URI of the image
- * @returns {Promise} - Classification results
- */
-export const classifyMaize = async (imageUri) => {
-  try {
+export const classifyMaize = async (imageUrl) => {
+  console.log("classifyMaize called with:", imageUrl);
+
+  let response;
+
+  if (Platform.OS === "web") {
+    // Web: send file
     const formData = new FormData();
+    const fileResponse = await fetch(imageUrl);
+    const blob = await fileResponse.blob();
+    formData.append("image", blob, "maize.jpg");
 
-    if (Platform.OS === 'web') {
-      // Web: fetch the URI as a blob and append it
-      const response = await fetch(imageUri);
-      const blob = await response.blob();
-      formData.append('image', blob, 'maize.jpg');
-    } else {
-      // Native (iOS/Android): use the uri object format
-      formData.append('image', {
-        uri: imageUri,
-        type: 'image/jpeg',
-        name: 'maize.jpg',
-      });
-    }
-
-    console.log('Sending image to:', `${API_URL}/classify`);
-
-    const response = await axios.post(`${API_URL}/classify`, formData, {
-      headers: {
-        'Content-Type': 'multipart/form-data',
-      },
-      timeout: 30000,
+    response = await fetch(`${API_URL}/classify`, {
+      method: "POST",
+      body: formData,
     });
-
-    console.log('Response received:', response.data);
-    return response.data;
-
-  } catch (error) {
-    console.error('Classification failed:', error);
-
-    if (error.response) {
-      throw new Error(error.response.data.error || 'Classification failed');
-    } else if (error.request) {
-      throw new Error(`Cannot connect to server at ${API_URL}. Please ensure:\n1. Backend is running\n2. IP address is correct\n3. You are on the same WiFi network`);
-    } else {
-      throw new Error(error.message);
-    }
+  } else {
+    // ✅ Android: send URL as JSON
+    response = await fetch(`${API_URL}/classify`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ image_url: imageUrl }),
+    });
   }
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData?.error || `Server error ${response.status}`);
+  }
+
+  const data = await response.json();
+  console.log("Classification result:", data);
+  return data;
 };
 
 export const predictDisease = classifyMaize;
