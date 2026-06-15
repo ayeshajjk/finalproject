@@ -179,8 +179,13 @@ def classify():
 # MAIN
 # ============================================================
 
+# ✅ Load the model at IMPORT time so it's ready under gunicorn / Render too
+# (gunicorn imports this file, so it never runs the __main__ block below).
+print("\n🌽 CORN CLASSIFICATION API")
+load_model()
+
 if __name__ == "__main__":
-    print("\n🌽 CORN CLASSIFICATION API")
-    load_model()
-    print("\n✅ Server running at http://localhost:5000\n")
-    app.run(host="0.0.0.0", port=5000, debug=False)
+    # ✅ Use the port Render provides via $PORT (falls back to 5000 locally).
+    port = int(os.environ.get("PORT", 5000))
+    print(f"\n✅ Server running at http://0.0.0.0:{port}\n")
+    app.run(host="0.0.0.0", port=port, debug=False)

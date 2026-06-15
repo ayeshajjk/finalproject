@@ -8,6 +8,13 @@ const getApiUrl = () => {
   return `http://${ANDROID_IP}:${API_PORT}`;
 };
 
+// AFTER — paste your Render URL here (no trailing slash, keep the https)
+// yaha pr render wala URL dal dyna and upper wala comment kr dyna
+// const API_URL = "https://maize-backend.onrender.com";
+
+// const getApiUrl = () => API_URL;
+
+
 const API_URL = getApiUrl();
 console.log(`🌐 Using API URL: ${API_URL} (Platform: ${Platform.OS})`);
 
