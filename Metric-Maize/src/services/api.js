@@ -1,18 +1,18 @@
 import { Platform } from "react-native";
 
-const ANDROID_IP = "192.168.1.12";
-const API_PORT = 5000;
+// const ANDROID_IP = "192.168.1.12";
+// const API_PORT = 5000;
 
-const getApiUrl = () => {
-  if (Platform.OS === "web") return "http://localhost:5000";
-  return `http://${ANDROID_IP}:${API_PORT}`;
-};
+// const getApiUrl = () => {
+//   if (Platform.OS === "web") return "http://localhost:5000";
+//   return `http://${ANDROID_IP}:${API_PORT}`;
+// };
 
 // AFTER — paste your Render URL here (no trailing slash, keep the https)
 // yaha pr render wala URL dal dyna and upper wala comment kr dyna
-// const API_URL = "https://maize-backend.onrender.com";
+const API_URL = "https://matric-maize.onrender.com";
 
-// const getApiUrl = () => API_URL;
+const getApiUrl = () => API_URL;
 
 
 const API_URL = getApiUrl();
