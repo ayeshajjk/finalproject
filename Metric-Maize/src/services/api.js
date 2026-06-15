@@ -21,30 +21,30 @@ export const getApiInfo = async () => {
   }
 };
 
-export const classifyMaize = async (imageUrl) => {
-  console.log("classifyMaize called with:", imageUrl);
+export const classifyMaize = async (imageUrl, base64Data = null) => {
+  console.log("classifyMaize called with:", imageUrl ? imageUrl.substring(0, 80) : "null");
+  console.log("base64Data provided:", base64Data ? `${base64Data.length} chars` : "null");
 
-  let response;
+  let body;
 
-  if (Platform.OS === "web") {
-    // Web: send file
-    const formData = new FormData();
-    const fileResponse = await fetch(imageUrl);
-    const blob = await fileResponse.blob();
-    formData.append("image", blob, "maize.jpg");
-
-    response = await fetch(`${API_URL}/classify`, {
-      method: "POST",
-      body: formData,
-    });
+  if (base64Data) {
+    // ✅ BEST PATH: Send raw base64 directly to Python backend
+    const cleanBase64 = base64Data.replace(/^data:image\/\w+;base64,/, '');
+    console.log(`📤 Sending base64 (${cleanBase64.length} chars) to backend...`);
+    body = { image_base64: cleanBase64 };
+  } else if (imageUrl) {
+    // Fallback: send URL if base64 not provided
+    console.log("📤 Sending image URL to backend...");
+    body = { image_url: imageUrl };
   } else {
-    // ✅ Android: send URL as JSON
-    response = await fetch(`${API_URL}/classify`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ image_url: imageUrl }),
-    });
+    throw new Error('No image data provided to classifyMaize');
   }
+
+  const response = await fetch(`${API_URL}/classify`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
 
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));

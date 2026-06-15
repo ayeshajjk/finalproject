@@ -14,8 +14,8 @@ import {
 import { CameraView, CameraType, useCameraPermissions } from 'expo-camera';
 import * as ImagePicker from 'expo-image-picker';
 import * as Notifications from 'expo-notifications';
-import * as FileSystem from 'expo-file-system'; // ✅ NEW
-import { decode } from 'base64-arraybuffer'; // ✅ NEW
+import * as FileSystem from 'expo-file-system';
+import { decode } from 'base64-arraybuffer';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../config/supabase';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -30,6 +30,42 @@ Notifications.setNotificationHandler({
     shouldSetBadge: false,
   }),
 });
+
+// ============================================================
+// 🌽 PARSE BACKEND PREDICTION INTO VARIETY + GRADE
+// ============================================================
+// Backend returns labels like: "Hybrid_local_white_damaged", "Agalwoi_white_good", "Popcorn_impure"
+// We split off the last segment as grade and format the rest as the variety name.
+
+const KNOWN_GRADES = ['good', 'damaged', 'impure'];
+
+const parsePrediction = (rawPrediction) => {
+  if (!rawPrediction || typeof rawPrediction !== 'string') {
+    return { variety: 'Unknown', grade: 'Unknown' };
+  }
+
+  const lower = rawPrediction.toLowerCase();
+  let grade = 'Unknown';
+  let variety = rawPrediction;
+
+  for (const g of KNOWN_GRADES) {
+    if (lower.endsWith(`_${g}`)) {
+      grade = g.charAt(0).toUpperCase() + g.slice(1); // "Damaged"
+      variety = rawPrediction.slice(0, -(g.length + 1)); // remove "_damaged"
+      break;
+    }
+  }
+
+  // Clean up underscores → spaces, capitalize each word
+  variety = variety
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (c) => c.toUpperCase())
+    .trim();
+
+  if (!variety) variety = 'Unknown';
+
+  return { variety, grade };
+};
 
 const ScanScreen = ({ navigation }) => {
   const { user, refreshProfile } = useAuth();
@@ -186,7 +222,7 @@ const ScanScreen = ({ navigation }) => {
       if (!prefs || !prefs.push_notifications || !prefs.scan_completion) return;
       await Notifications.scheduleNotificationAsync({
         content: {
-          title: ' Scan Complete',
+          title: '🌽 Scan Complete',
           body: `${classificationResult} • ${gradeResult} • ${confidenceResult}% confidence`,
           data: { type: 'scan_completion' },
           sound: prefs.sound_enabled ? 'default' : null,
@@ -217,8 +253,9 @@ const ScanScreen = ({ navigation }) => {
       const photo = await cameraRef.current.takePictureAsync({
         quality: 0.8,
         skipProcessing: true,
+        base64: true,
       });
-      processImage(photo.uri);
+      processImage(photo.uri, photo.base64);
     } catch (error) {
       console.error('Camera error:', error);
       Alert.alert('Error', 'Could not take picture: ' + error.message);
@@ -235,13 +272,14 @@ const ScanScreen = ({ navigation }) => {
         }
       }
       const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        mediaTypes: ['images'],
         allowsEditing: true,
         aspect: [4, 3],
         quality: 0.8,
+        base64: true,
       });
-      if (!result.canceled && result.assets?.[0]?.uri) {
-        processImage(result.assets[0].uri);
+      if (!result.canceled && result.assets?.[0]) {
+        processImage(result.assets[0].uri, result.assets[0].base64);
       }
     } catch (error) {
       console.error('Picker error:', error);
@@ -249,68 +287,118 @@ const ScanScreen = ({ navigation }) => {
     }
   };
 
-  // ✅ FIXED processImage - reliable Android upload via FileSystem + base64
-  const processImage = async (imageUri) => {
+  // ============================================================
+  // ✅ FIXED: Maps backend response fields correctly
+  // ============================================================
+  const processImage = async (imageUri, base64Data) => {
     setLoading(true);
     setCurrentImage(imageUri);
     try {
-      const fileName = `scan_${Date.now()}.jpg`;
-      const filePath = `${user.id}/${fileName}`;
+      let finalBase64 = base64Data;
 
-      // ✅ Read file as base64 (works on Android APK)
-      console.log('📂 Reading file as base64...');
-      const base64 = await FileSystem.readAsStringAsync(imageUri, {
-        encoding: FileSystem.EncodingType.Base64,
-      });
-
-      // ✅ Convert base64 to ArrayBuffer for Supabase
-      const arrayBuffer = decode(base64);
-
-      console.log('⬆️ Uploading to Supabase...');
-      const { error: uploadError } = await supabase.storage
-        .from('scan-images')
-        .upload(filePath, arrayBuffer, {
-          contentType: 'image/jpeg',
-          cacheControl: '3600',
-          upsert: false,
-        });
-
-      if (uploadError) {
-        console.error('Upload error:', uploadError);
-        throw new Error('Failed to upload image');
+      // Fallback: If Base64 somehow wasn't passed, try reading it manually
+      if (!finalBase64) {
+        if (Platform.OS === 'web') {
+          throw new Error('Could not extract image data. Please try again.');
+        } else {
+          finalBase64 = await FileSystem.readAsStringAsync(imageUri, {
+            encoding: FileSystem.EncodingType.Base64,
+          });
+        }
       }
 
-      const { data: { publicUrl } } = supabase.storage
-        .from('scan-images')
-        .getPublicUrl(filePath);
+      // STRIP THE PREFIX: Web sometimes leaves "data:image/jpeg;base64," at the start
+      const cleanBase64 = finalBase64.replace(/^data:image\/\w+;base64,/, '');
 
-      console.log('✅ Uploaded. Calling backend...');
+      if (!cleanBase64 || cleanBase64.length < 100) {
+        throw new Error('Image data is empty or too small.');
+      }
 
-      // ✅ Call backend AI
-      const apiResult = await classifyMaize(publicUrl);
+      console.log(`🧠 Sending ${cleanBase64.length} chars of base64 to backend...`);
+
+      // ✅ Call backend AI using BASE64 directly
+      const apiResult = await classifyMaize(null, cleanBase64);
       console.log('✅ Backend result:', apiResult);
 
-      const classificationResult =
-        apiResult.classification ||
-        apiResult.variety ||
-        apiResult.predicted_class ||
-        'Unknown';
-      const gradeResult = apiResult.grade || 'unknown';
+      // ============================================================
+      // ✅ FIXED FIELD MAPPING
+      // Backend returns: { success, prediction, confidence, all_probabilities }
+      // prediction = "Hybrid_local_white_damaged" (variety + grade combined)
+      // ============================================================
+
+      if (!apiResult.success) {
+        throw new Error(apiResult.error || 'Backend returned unsuccessful response');
+      }
+
+      const rawPrediction = apiResult.prediction || '';
       const confidenceResult =
         apiResult.confidence !== undefined ? Math.round(apiResult.confidence) : 0;
 
+      // ✅ Parse "Hybrid_local_white_damaged" → variety + grade
+      const { variety: classificationResult, grade: gradeResult } =
+        parsePrediction(rawPrediction);
+
+      console.log('📋 Parsed → Variety:', classificationResult, '| Grade:', gradeResult, '| Confidence:', confidenceResult);
+
       if (!classificationResult || classificationResult === 'Unknown') {
-        throw new Error('Backend did not return a valid classification');
+        throw new Error(
+          `Backend returned unrecognized prediction: "${rawPrediction}"`
+        );
       }
 
+      // ✅ Map all_probabilities → all_predictions for display
+      // Group by variety and also keep raw probabilities
+      const rawProbabilities = apiResult.all_probabilities || {};
+      const allPreds = {};
+      Object.entries(rawProbabilities).forEach(([label, prob]) => {
+        const { variety } = parsePrediction(label);
+        // Sum probabilities for the same variety across grades
+        if (allPreds[variety]) {
+          allPreds[variety] += prob;
+        } else {
+          allPreds[variety] = prob;
+        }
+      });
+
+      // Upload to Supabase for history display (non-blocking, graceful failure)
+      let publicUrl = null;
+      try {
+        const arrayBuffer = decode(cleanBase64);
+        const fileName = `scan_${Date.now()}.jpg`;
+        const filePath = `${user.id}/${fileName}`;
+
+        console.log(`⬆️ Uploading ${arrayBuffer.byteLength} bytes to Supabase...`);
+        const { error: uploadError } = await supabase.storage
+          .from('scan-images')
+          .upload(filePath, arrayBuffer, {
+            contentType: 'image/jpeg',
+            cacheControl: '3600',
+            upsert: false,
+          });
+
+        if (uploadError) {
+          console.warn('⚠️ Supabase upload failed (non-critical):', uploadError.message);
+        } else {
+          const {
+            data: { publicUrl: url },
+          } = supabase.storage.from('scan-images').getPublicUrl(filePath);
+          publicUrl = url;
+          console.log('✅ Uploaded to Supabase:', publicUrl);
+        }
+      } catch (uploadErr) {
+        console.warn('⚠️ Supabase upload error (non-critical):', uploadErr.message);
+      }
+
+      // Save to Database
+      const imageUrlForDb = publicUrl || '';
       const { error: scanError } = await supabase
         .from('scan_history')
         .insert([
           {
             user_id: user.id,
-            image_url: publicUrl,
+            image_url: imageUrlForDb,
             classification: classificationResult,
-            grade: gradeResult,
+            grade: gradeResult.toLowerCase(),
             confidence: confidenceResult,
           },
         ])
@@ -321,7 +409,9 @@ const ScanScreen = ({ navigation }) => {
       setClassification(classificationResult);
       setGrade(gradeResult);
       setConfidence(confidenceResult);
-      setAllPredictions(apiResult.all_predictions || null);
+      setAllPredictions(
+        Object.keys(allPreds).length > 0 ? allPreds : null
+      );
       setLoading(false);
       setShowPreview(true);
 
@@ -363,20 +453,20 @@ const ScanScreen = ({ navigation }) => {
     setAllPredictions(null);
   };
 
-  const getGradeColor = (grade) => {
+  const getGradeColor = (gradeVal) => {
     const gradeColors = {
-      'good': ['#10B981', '#059669'],
-      'Good': ['#10B981', '#059669'],
-      'damaged': ['#F59E0B', '#D97706'],
-      'Damaged': ['#F59E0B', '#D97706'],
-      'impure': ['#EF4444', '#DC2626'],
-      'Impure': ['#EF4444', '#DC2626'],
+      good: ['#10B981', '#059669'],
+      Good: ['#10B981', '#059669'],
+      damaged: ['#F59E0B', '#D97706'],
+      Damaged: ['#F59E0B', '#D97706'],
+      impure: ['#EF4444', '#DC2626'],
+      Impure: ['#EF4444', '#DC2626'],
     };
-    return gradeColors[grade] || ['#6B7280', '#4B5563'];
+    return gradeColors[gradeVal] || ['#6B7280', '#4B5563'];
   };
 
-  const getGradeIcon = (grade) => {
-    const gradeLower = grade?.toLowerCase();
+  const getGradeIcon = (gradeVal) => {
+    const gradeLower = gradeVal?.toLowerCase();
     if (gradeLower === 'good') return 'checkmark-circle';
     if (gradeLower === 'damaged') return 'alert-circle';
     if (gradeLower === 'impure') return 'close-circle';
@@ -402,8 +492,13 @@ const ScanScreen = ({ navigation }) => {
         <StatusBar backgroundColor="#18392B" barStyle="light-content" />
         <View style={styles.loadingContainer}>
           <View style={styles.loadingImageWrapper}>
-            {currentImage && <Image source={{ uri: currentImage }} style={styles.loadingImage} />}
-            <LinearGradient colors={['transparent', 'rgba(24, 57, 43, 0.9)']} style={styles.imageOverlay} />
+            {currentImage && (
+              <Image source={{ uri: currentImage }} style={styles.loadingImage} />
+            )}
+            <LinearGradient
+              colors={['transparent', 'rgba(24, 57, 43, 0.9)']}
+              style={styles.imageOverlay}
+            />
           </View>
           <View style={styles.loadingContent}>
             <View style={styles.scanningIndicator}>
@@ -423,7 +518,9 @@ const ScanScreen = ({ navigation }) => {
               </View>
               <View style={styles.stepItem}>
                 <Feather name="clock" size={18} color="#9CA3AF" />
-                <Text style={[styles.stepText, { color: '#9CA3AF' }]}>Evaluating quality</Text>
+                <Text style={[styles.stepText, { color: '#9CA3AF' }]}>
+                  Evaluating quality
+                </Text>
               </View>
             </View>
           </View>
@@ -436,7 +533,10 @@ const ScanScreen = ({ navigation }) => {
     return (
       <View style={styles.container}>
         <StatusBar backgroundColor="#18392B" barStyle="light-content" />
-        <LinearGradient colors={['#18392B', '#14452F']} style={styles.previewHeader}>
+        <LinearGradient
+          colors={['#18392B', '#14452F']}
+          style={styles.previewHeader}
+        >
           <TouchableOpacity onPress={handleScanAnother} style={styles.backButton}>
             <Feather name="arrow-left" size={24} color="#FFFFFF" />
           </TouchableOpacity>
@@ -451,9 +551,17 @@ const ScanScreen = ({ navigation }) => {
         <ScrollView style={styles.previewScroll}>
           <View style={styles.previewImageContainer}>
             <Image source={{ uri: currentImage }} style={styles.previewImage} />
-            <LinearGradient colors={['transparent', 'rgba(0,0,0,0.3)']} style={styles.previewImageOverlay} />
+            <LinearGradient
+              colors={['transparent', 'rgba(0,0,0,0.3)']}
+              style={styles.previewImageOverlay}
+            />
             <View style={styles.confidenceBadge}>
-              <Ionicons name="analytics" size={16} color="#FFFFFF" style={{ marginRight: 6 }} />
+              <Ionicons
+                name="analytics"
+                size={16}
+                color="#FFFFFF"
+                style={{ marginRight: 6 }}
+              />
               <Text style={styles.confidenceText}>{confidence}% Confident</Text>
             </View>
           </View>
@@ -471,7 +579,11 @@ const ScanScreen = ({ navigation }) => {
               <View style={styles.resultDivider} />
               <View style={styles.resultItem}>
                 <View style={styles.resultIconContainer}>
-                  <Ionicons name={getGradeIcon(grade)} size={24} color="#18392B" />
+                  <Ionicons
+                    name={getGradeIcon(grade)}
+                    size={24}
+                    color="#18392B"
+                  />
                 </View>
                 <View style={styles.resultTextContainer}>
                   <Text style={styles.resultLabel}>Quality Grade</Text>
@@ -481,8 +593,14 @@ const ScanScreen = ({ navigation }) => {
                     end={{ x: 1, y: 0 }}
                     style={styles.gradeBadgeLarge}
                   >
-                    <Ionicons name={getGradeIcon(grade)} size={16} color="#FFFFFF" />
-                    <Text style={styles.gradeBadgeText}>{grade.charAt(0).toUpperCase() + grade.slice(1)}</Text>
+                    <Ionicons
+                      name={getGradeIcon(grade)}
+                      size={16}
+                      color="#FFFFFF"
+                    />
+                    <Text style={styles.gradeBadgeText}>
+                      {grade.charAt(0).toUpperCase() + grade.slice(1)}
+                    </Text>
                   </LinearGradient>
                 </View>
               </View>
@@ -499,10 +617,15 @@ const ScanScreen = ({ navigation }) => {
                         colors={['#10B981', '#059669']}
                         start={{ x: 0, y: 0 }}
                         end={{ x: 1, y: 0 }}
-                        style={[styles.confidenceFill, { width: `${confidence}%` }]}
+                        style={[
+                          styles.confidenceFill,
+                          { width: `${confidence}%` },
+                        ]}
                       />
                     </View>
-                    <Text style={styles.confidencePercentage}>{confidence}%</Text>
+                    <Text style={styles.confidencePercentage}>
+                      {confidence}%
+                    </Text>
                   </View>
                 </View>
               </View>
@@ -510,25 +633,38 @@ const ScanScreen = ({ navigation }) => {
             {allPredictions && Object.keys(allPredictions).length > 1 && (
               <View style={styles.allPredictionsCard}>
                 <Text style={styles.allPredictionsTitle}>
-                  <Ionicons name="list" size={18} color="#18392B" /> All Predictions
+                  <Ionicons name="list" size={18} color="#18392B" /> All
+                  Predictions
                 </Text>
                 {Object.entries(allPredictions)
                   .sort((a, b) => b[1] - a[1])
                   .map(([variety, conf], index) => (
                     <View key={variety} style={styles.predictionRow}>
                       <View style={styles.predictionRank}>
-                        <Text style={styles.predictionRankText}>{index + 1}</Text>
+                        <Text style={styles.predictionRankText}>
+                          {index + 1}
+                        </Text>
                       </View>
                       <Text style={styles.predictionVariety}>{variety}</Text>
                       <View style={styles.predictionConfBar}>
-                        <View style={[styles.predictionConfFill, { width: `${conf}%` }]} />
+                        <View
+                          style={[
+                            styles.predictionConfFill,
+                            { width: `${Math.min(conf, 100)}%` },
+                          ]}
+                        />
                       </View>
-                      <Text style={styles.predictionConfText}>{conf.toFixed(1)}%</Text>
+                      <Text style={styles.predictionConfText}>
+                        {conf.toFixed(1)}%
+                      </Text>
                     </View>
                   ))}
               </View>
             )}
-            <TouchableOpacity style={styles.primaryButton} onPress={handleScanAnother}>
+            <TouchableOpacity
+              style={styles.primaryButton}
+              onPress={handleScanAnother}
+            >
               <LinearGradient
                 colors={['#18392B', '#14452F']}
                 start={{ x: 0, y: 0 }}
@@ -546,16 +682,24 @@ const ScanScreen = ({ navigation }) => {
                   <View style={styles.recentHorizontalList}>
                     {recentScans.slice(1).map((scan) => (
                       <View key={scan.id} style={styles.recentCardHorizontal}>
-                        <Image source={{ uri: scan.image_url }} style={styles.recentImageHorizontal} />
+                        <Image
+                          source={{ uri: scan.image_url }}
+                          style={styles.recentImageHorizontal}
+                        />
                         <View style={styles.recentOverlay}>
-                          <Text style={styles.recentClassSmall} numberOfLines={1}>
+                          <Text
+                            style={styles.recentClassSmall}
+                            numberOfLines={1}
+                          >
                             {scan.classification}
                           </Text>
                           <LinearGradient
                             colors={getGradeColor(scan.grade)}
                             style={styles.recentGradeBadgeSmall}
                           >
-                            <Text style={styles.recentGradeSmall}>{scan.grade}</Text>
+                            <Text style={styles.recentGradeSmall}>
+                              {scan.grade}
+                            </Text>
                           </LinearGradient>
                         </View>
                       </View>
@@ -573,11 +717,16 @@ const ScanScreen = ({ navigation }) => {
   return (
     <View style={styles.container}>
       <StatusBar backgroundColor="#18392B" barStyle="light-content" />
-      <LinearGradient colors={['#18392B', '#14452F']} style={styles.header}>
+      <LinearGradient
+        colors={['#18392B', '#14452F']}
+        style={styles.header}
+      >
         <View style={styles.headerContent}>
           <View>
             <Text style={styles.headerTitle}>Maize Classifier</Text>
-            <Text style={styles.headerSubtitle}>AI-Powered Quality Analysis</Text>
+            <Text style={styles.headerSubtitle}>
+              AI-Powered Quality Analysis
+            </Text>
           </View>
           <View style={styles.headerIconContainer}>
             <Ionicons name="scan" size={28} color="#FFFFFF" />
@@ -601,29 +750,50 @@ const ScanScreen = ({ navigation }) => {
                   <View style={[styles.corner, styles.cornerBR]} />
                 </View>
                 <Text style={styles.cameraHint}>
-                  <Ionicons name="information-circle" size={16} color="#FFFFFF" /> Position maize kernels in frame
+                  <Ionicons
+                    name="information-circle"
+                    size={16}
+                    color="#FFFFFF"
+                  />{' '}
+                  Position maize kernels in frame
                 </Text>
               </View>
             </CameraView>
           </View>
         ) : (
           <View style={styles.webPlaceholder}>
-            <LinearGradient colors={['#E8F5E9', '#C8E6C9']} style={styles.webPlaceholderGradient}>
+            <LinearGradient
+              colors={['#E8F5E9', '#C8E6C9']}
+              style={styles.webPlaceholderGradient}
+            >
               <Ionicons name="image-outline" size={80} color="#18392B" />
-              <Text style={styles.webPlaceholderText}>Select maize image to analyze</Text>
-              <Text style={styles.webPlaceholderSubtext}>Upload from your gallery</Text>
+              <Text style={styles.webPlaceholderText}>
+                Select maize image to analyze
+              </Text>
+              <Text style={styles.webPlaceholderSubtext}>
+                Upload from your gallery
+              </Text>
             </LinearGradient>
           </View>
         )}
         <View style={styles.actionButtonsContainer}>
-          <TouchableOpacity style={styles.actionButtonPrimary} onPress={handlePickImage}>
-            <LinearGradient colors={['#18392B', '#14452F']} style={styles.actionButtonGradient}>
+          <TouchableOpacity
+            style={styles.actionButtonPrimary}
+            onPress={handlePickImage}
+          >
+            <LinearGradient
+              colors={['#18392B', '#14452F']}
+              style={styles.actionButtonGradient}
+            >
               <Feather name="image" size={24} color="#FFFFFF" />
               <Text style={styles.actionButtonText}>Choose from Gallery</Text>
             </LinearGradient>
           </TouchableOpacity>
           {Platform.OS !== 'web' && hasCameraPermission === true && (
-            <TouchableOpacity style={styles.actionButtonSecondary} onPress={handleTakePicture}>
+            <TouchableOpacity
+              style={styles.actionButtonSecondary}
+              onPress={handleTakePicture}
+            >
               <Feather name="camera" size={24} color="#18392B" />
               <Text style={styles.actionButtonTextSecondary}>
                 {cameraReady ? 'Take Photo' : 'Camera Loading...'}
@@ -664,30 +834,45 @@ const ScanScreen = ({ navigation }) => {
           <Text style={styles.sectionTitle}>Quality Grades</Text>
           <View style={styles.gradesInfo}>
             <View style={styles.gradeInfoItem}>
-              <LinearGradient colors={['#10B981', '#059669']} style={styles.gradeInfoBadge}>
+              <LinearGradient
+                colors={['#10B981', '#059669']}
+                style={styles.gradeInfoBadge}
+              >
                 <Ionicons name="checkmark-circle" size={20} color="#FFFFFF" />
               </LinearGradient>
               <View style={styles.gradeInfoText}>
                 <Text style={styles.gradeInfoTitle}>Good</Text>
-                <Text style={styles.gradeInfoDesc}>High quality, no defects</Text>
+                <Text style={styles.gradeInfoDesc}>
+                  High quality, no defects
+                </Text>
               </View>
             </View>
             <View style={styles.gradeInfoItem}>
-              <LinearGradient colors={['#F59E0B', '#D97706']} style={styles.gradeInfoBadge}>
+              <LinearGradient
+                colors={['#F59E0B', '#D97706']}
+                style={styles.gradeInfoBadge}
+              >
                 <Ionicons name="alert-circle" size={20} color="#FFFFFF" />
               </LinearGradient>
               <View style={styles.gradeInfoText}>
                 <Text style={styles.gradeInfoTitle}>Damaged</Text>
-                <Text style={styles.gradeInfoDesc}>Physical damage present</Text>
+                <Text style={styles.gradeInfoDesc}>
+                  Physical damage present
+                </Text>
               </View>
             </View>
             <View style={styles.gradeInfoItem}>
-              <LinearGradient colors={['#EF4444', '#DC2626']} style={styles.gradeInfoBadge}>
+              <LinearGradient
+                colors={['#EF4444', '#DC2626']}
+                style={styles.gradeInfoBadge}
+              >
                 <Ionicons name="close-circle" size={20} color="#FFFFFF" />
               </LinearGradient>
               <View style={styles.gradeInfoText}>
                 <Text style={styles.gradeInfoTitle}>Impure</Text>
-                <Text style={styles.gradeInfoDesc}>Contains foreign matter</Text>
+                <Text style={styles.gradeInfoDesc}>
+                  Contains foreign matter
+                </Text>
               </View>
             </View>
           </View>
@@ -701,8 +886,14 @@ const ScanScreen = ({ navigation }) => {
             <View style={styles.recentGrid}>
               {recentScans.map((scan) => (
                 <View key={scan.id} style={styles.recentCard}>
-                  <Image source={{ uri: scan.image_url }} style={styles.recentImage} />
-                  <LinearGradient colors={['transparent', 'rgba(0,0,0,0.7)']} style={styles.recentCardOverlay}>
+                  <Image
+                    source={{ uri: scan.image_url }}
+                    style={styles.recentImage}
+                  />
+                  <LinearGradient
+                    colors={['transparent', 'rgba(0,0,0,0.7)']}
+                    style={styles.recentCardOverlay}
+                  >
                     <Text style={styles.recentClass} numberOfLines={1}>
                       {scan.classification}
                     </Text>
@@ -710,7 +901,11 @@ const ScanScreen = ({ navigation }) => {
                       colors={getGradeColor(scan.grade)}
                       style={styles.recentGradeBadge}
                     >
-                      <Ionicons name={getGradeIcon(scan.grade)} size={12} color="#FFFFFF" />
+                      <Ionicons
+                        name={getGradeIcon(scan.grade)}
+                        size={12}
+                        color="#FFFFFF"
+                      />
                       <Text style={styles.recentGrade}>{scan.grade}</Text>
                     </LinearGradient>
                   </LinearGradient>
@@ -725,7 +920,8 @@ const ScanScreen = ({ navigation }) => {
             </View>
             <Text style={styles.emptyTitle}>No Scans Yet</Text>
             <Text style={styles.emptySubtext}>
-              Start by uploading or capturing an image of maize kernels to get instant variety classification and quality analysis
+              Start by uploading or capturing an image of maize kernels to get
+              instant variety classification and quality analysis
             </Text>
           </View>
         )}
