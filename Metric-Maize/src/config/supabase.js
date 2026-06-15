@@ -6,5 +6,5 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 
 export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-// API endpoint for Flask backend
-export const API_URL = 'http://192.168.1.4:5000';
+// NOTE: The Flask backend URL/IP is configured in one place only — src/services/api.js
+// (ANDROID_IP). Do not redefine it here to avoid conflicting values.

@@ -314,53 +314,11 @@ const ScanScreen = ({ navigation }) => {
         throw new Error('Image data is empty or too small.');
       }
 
-      console.log(`🧠 Sending ${cleanBase64.length} chars of base64 to backend...`);
-
-      // ✅ Call backend AI using BASE64 directly
-      const apiResult = await classifyMaize(null, cleanBase64);
-      console.log('✅ Backend result:', apiResult);
-
       // ============================================================
-      // ✅ FIXED FIELD MAPPING
-      // Backend returns: { success, prediction, confidence, all_probabilities }
-      // prediction = "Hybrid_local_white_damaged" (variety + grade combined)
+      // ✅ STEP 1: Upload to Supabase FIRST to obtain a public image URL.
+      // We need this URL so we can send it to the backend ALONGSIDE the base64.
+      // (Still non-blocking: if it fails, we fall back to base64 only.)
       // ============================================================
-
-      if (!apiResult.success) {
-        throw new Error(apiResult.error || 'Backend returned unsuccessful response');
-      }
-
-      const rawPrediction = apiResult.prediction || '';
-      const confidenceResult =
-        apiResult.confidence !== undefined ? Math.round(apiResult.confidence) : 0;
-
-      // ✅ Parse "Hybrid_local_white_damaged" → variety + grade
-      const { variety: classificationResult, grade: gradeResult } =
-        parsePrediction(rawPrediction);
-
-      console.log('📋 Parsed → Variety:', classificationResult, '| Grade:', gradeResult, '| Confidence:', confidenceResult);
-
-      if (!classificationResult || classificationResult === 'Unknown') {
-        throw new Error(
-          `Backend returned unrecognized prediction: "${rawPrediction}"`
-        );
-      }
-
-      // ✅ Map all_probabilities → all_predictions for display
-      // Group by variety and also keep raw probabilities
-      const rawProbabilities = apiResult.all_probabilities || {};
-      const allPreds = {};
-      Object.entries(rawProbabilities).forEach(([label, prob]) => {
-        const { variety } = parsePrediction(label);
-        // Sum probabilities for the same variety across grades
-        if (allPreds[variety]) {
-          allPreds[variety] += prob;
-        } else {
-          allPreds[variety] = prob;
-        }
-      });
-
-      // Upload to Supabase for history display (non-blocking, graceful failure)
       let publicUrl = null;
       try {
         const arrayBuffer = decode(cleanBase64);
@@ -388,6 +346,62 @@ const ScanScreen = ({ navigation }) => {
       } catch (uploadErr) {
         console.warn('⚠️ Supabase upload error (non-critical):', uploadErr.message);
       }
+
+      // ============================================================
+      // ✅ STEP 2: Call backend AI sending BOTH the image URL and the base64.
+      //   - publicUrl   → backend downloads & classifies this (primary path)
+      //   - cleanBase64 → sent alongside as a fallback
+      // ============================================================
+      console.log(
+        `🧠 Sending to backend → url: ${publicUrl ? 'yes' : 'no'}, base64: ${cleanBase64.length} chars`
+      );
+      const apiResult = await classifyMaize(publicUrl, cleanBase64);
+      console.log('✅ Backend result:', apiResult);
+
+      // ============================================================
+      // ✅ FIELD MAPPING — supports BOTH backend response shapes:
+      //   New: { success, variety, grade, confidence, full_prediction }
+      //   Old: { success, prediction, confidence, all_probabilities }
+      // ============================================================
+
+      if (!apiResult.success) {
+        throw new Error(apiResult.error || 'Backend returned unsuccessful response');
+      }
+
+      // Raw combined label, e.g. "Hybrid_local_white_damaged"
+      const rawPrediction =
+        apiResult.full_prediction || apiResult.prediction || '';
+
+      const confidenceResult =
+        apiResult.confidence !== undefined ? Math.round(apiResult.confidence) : 0;
+
+      // Prefer the clean variety/grade the backend already provides;
+      // otherwise fall back to parsing the raw combined label.
+      const parsed = parsePrediction(rawPrediction);
+      const classificationResult = apiResult.variety || parsed.variety;
+      const gradeResult = apiResult.grade || parsed.grade;
+
+      console.log('📋 Parsed → Variety:', classificationResult, '| Grade:', gradeResult, '| Confidence:', confidenceResult);
+
+      if (!classificationResult || classificationResult === 'Unknown') {
+        throw new Error(
+          `Backend returned unrecognized prediction: "${rawPrediction}"`
+        );
+      }
+
+      // ✅ Map all_probabilities → all_predictions for display (if backend sends them)
+      // Group by variety and also keep raw probabilities
+      const rawProbabilities = apiResult.all_probabilities || {};
+      const allPreds = {};
+      Object.entries(rawProbabilities).forEach(([label, prob]) => {
+        const { variety } = parsePrediction(label);
+        // Sum probabilities for the same variety across grades
+        if (allPreds[variety]) {
+          allPreds[variety] += prob;
+        } else {
+          allPreds[variety] = prob;
+        }
+      });
 
       // Save to Database
       const imageUrlForDb = publicUrl || '';

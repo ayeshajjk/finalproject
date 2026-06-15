@@ -13,7 +13,7 @@ console.log(`🌐 Using API URL: ${API_URL} (Platform: ${Platform.OS})`);
 
 export const getApiInfo = async () => {
   try {
-    const res = await fetch(`${API_URL}/info`);
+    const res = await fetch(`${API_URL}/status`);
     return await res.json();
   } catch (e) {
     console.warn("Ignoring /info error:", e?.message);
@@ -25,20 +25,28 @@ export const classifyMaize = async (imageUrl, base64Data = null) => {
   console.log("classifyMaize called with:", imageUrl ? imageUrl.substring(0, 80) : "null");
   console.log("base64Data provided:", base64Data ? `${base64Data.length} chars` : "null");
 
-  let body;
+  // ✅ Send BOTH the image URL and the base64 string together (whichever we have).
+  //    - image_url    → current backend downloads & classifies this (primary path)
+  //    - image_base64 → sent alongside as a fallback for base64-capable backends
+  const body = {};
+
+  if (imageUrl) {
+    body.image_url = imageUrl;
+  }
 
   if (base64Data) {
-    // ✅ BEST PATH: Send raw base64 directly to Python backend
-    const cleanBase64 = base64Data.replace(/^data:image\/\w+;base64,/, '');
-    console.log(`📤 Sending base64 (${cleanBase64.length} chars) to backend...`);
-    body = { image_base64: cleanBase64 };
-  } else if (imageUrl) {
-    // Fallback: send URL if base64 not provided
-    console.log("📤 Sending image URL to backend...");
-    body = { image_url: imageUrl };
-  } else {
-    throw new Error('No image data provided to classifyMaize');
+    // Strip any "data:image/...;base64," prefix the web sometimes adds.
+    body.image_base64 = base64Data.replace(/^data:image\/\w+;base64,/, '');
   }
+
+  if (!body.image_url && !body.image_base64) {
+    throw new Error('No image data provided to classifyMaize (need image_url or base64).');
+  }
+
+  console.log("📤 Sending to backend →", {
+    image_url: body.image_url ? `${body.image_url.substring(0, 60)}...` : null,
+    image_base64: body.image_base64 ? `${body.image_base64.length} chars` : null,
+  });
 
   const response = await fetch(`${API_URL}/classify`, {
     method: "POST",
