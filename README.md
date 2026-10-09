@@ -1,4 +1,4 @@
-# 🌽 Maize Metric
+# Maize Metric
 
 > **AI-powered maize (corn) variety and quality classification** — point your phone at maize kernels and instantly get the **variety** and a **quality grade** with a confidence score.
 
@@ -6,43 +6,40 @@ Maize Metric is a full-stack mobile application that uses a deep-learning image 
 
 ---
 
-## ✨ Features
+## Features
 
-- 📷 **Scan with camera or gallery** — capture maize kernels live or pick an existing photo.
-- 🧠 **AI classification** — identifies the maize **variety** and **quality grade** in seconds.
-- 📊 **Confidence score & full breakdown** — see the top prediction plus per-class probabilities.
-- 🕓 **Scan history** — every scan is saved and viewable, with real-time updates and delete options.
-- 🔐 **User accounts** — sign up / sign in, profiles, and per-user history (Supabase Auth).
-- 🔔 **Notifications** — optional "scan complete" push notifications.
-- 🌗 **Theming & settings** — light theme UI with profile, help, privacy, terms, and about screens.
+- **Scan with Gallery** — capture maize kernels on an existing photo.
+- **AI classification** — identifies the maize **variety** and **quality grade** in seconds.
+- **Confidence score & full breakdown** — see the top prediction plus per-class probabilities.
+- **Scan history** — every scan is saved and viewable, with real-time updates and delete options.
+- **User accounts** — sign up / sign in, profiles, and per-user history (Supabase Auth).
+- **Notifications** — optional "scan complete" push notifications.
+- **Theming & settings** — light theme UI with profile, help, privacy, terms, and about screens.
 
 ---
 
-## 🏷️ What it detects
+## What it detects
 
 The model classifies **4 varieties × 3 quality grades = 12 classes**.
 
 | Varieties | Quality Grades |
 |---|---|
-| Agalwoi White | ✅ **Good** — high quality, no defects |
-| Hybrid Local White | ⚠️ **Damaged** — physical damage present |
-| Popcorn | ❌ **Impure** — contains foreign matter |
-| Redcorn | |
-
+| Agalwoi White | Hybrid Local White | Popcorn | Redcorn
+Good — high quality, no defects , Damaged — physical damage present ,  Impure — contains foreign matter
 ---
 
-## 🧱 Architecture
+## Architecture
 
 The app and the AI model are **two separate programs** that talk over HTTP:
 
 ```
-   📱 Mobile App (React Native / Expo)
+    Mobile App (React Native / Expo)
         │
         │  1. capture / pick image  →  base64
         │  2. upload image to Supabase Storage (for history thumbnail)
         │  3. POST { image_url, image_base64 }
         ▼
-   🖥️  Backend (Flask + TensorFlow)            ☁️ Supabase
+     Backend (Flask + TensorFlow)             Supabase
         │  - loads MobileNetV2 model               - Auth (users)
         │  - preprocesses image                    - Storage (scan-images)
         │  - predicts variety + grade              - Database (profiles, scan_history)
@@ -50,12 +47,12 @@ The app and the AI model are **two separate programs** that talk over HTTP:
    { success, prediction, confidence, all_probabilities }
         │
         ▼
-   📱 App shows Variety / Grade / Confidence  →  saves result to history
+   📱App shows Variety / Grade / Confidence  →  saves result to history
 ```
 
 ---
 
-## 🛠️ Tech Stack
+## Tech Stack
 
 **Frontend**
 - React Native `0.83` + Expo `~55`
@@ -76,7 +73,7 @@ The app and the AI model are **two separate programs** that talk over HTTP:
 
 ---
 
-## 📁 Project Structure
+## Project Structure
 
 ```
 finalproject/
@@ -96,12 +93,12 @@ finalproject/
         ├── contexts/                # Auth & Theme providers
         ├── navigation/AppNavigator.js
         ├── screens/                 # Scan, History, Profile, Auth, etc.
-        └── services/api.js          # ⭐ backend URL is configured here
+        └── services/api.js          # backend URL is configured here
 ```
 
 ---
 
-## 🚀 Getting Started
+## Getting Started
 
 ### Prerequisites
 - **Node.js** 18+ and npm
@@ -137,7 +134,7 @@ Scan the QR code with **Expo Go** (or a dev build) on your device.
 
 ---
 
-## 🗄️ Supabase Setup
+## Supabase Setup
 
 The app expects:
 
@@ -149,11 +146,11 @@ The app expects:
   - `notification_settings` — per-user notification preferences
 
 Add your project URL and **anon** key in [`Metric-Maize/src/config/supabase.js`](Metric-Maize/src/config/supabase.js).
-> ⚠️ Only the **anon** key belongs in the client (it's public by design and guarded by Row-Level Security). Never ship a `service_role` key in the app.
+> Only the **anon** key belongs in the client (it's public by design and guarded by Row-Level Security). Never ship a `service_role` key in the app.
 
 ---
 
-## ☁️ Deploying the Backend (Render)
+## Deploying the Backend (Render)
 
 > **Heads up:** TensorFlow needs ~600 MB–1 GB RAM. Render's free 512 MB instance will likely run out of memory — use an instance with **≥ 2 GB RAM**, or convert the model to **TFLite** to shrink it.
 
@@ -169,7 +166,7 @@ Add your project URL and **anon** key in [`Metric-Maize/src/config/supabase.js`]
 
 ---
 
-## 🔌 API Reference
+## API Reference
 
 ### `GET /status`
 Health check.
@@ -201,7 +198,7 @@ The app splits `prediction` into a clean **variety** (e.g. *Hybrid Local White*)
 
 ---
 
-## 🧠 Model Details
+Model Details
 
 - **Architecture:** MobileNetV2 (transfer learning) + dense classification head
 - **Input size:** 224 × 224 RGB
@@ -212,6 +209,6 @@ To swap in a retrained model, replace `backend/models/corn_model.keras/corn_mode
 
 ---
 
-## 📜 License
+License
 
-This project was built as a final-year project. Add your preferred license here.
+This project was built as a final-year project.
